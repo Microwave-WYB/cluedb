@@ -1,6 +1,6 @@
 [project]
 name = "cluedb"
-version = "0.1.0"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 authors = [{ name = "Yibo Wei", email = "david_wyb2001@outlook.com" }]
@@ -22,10 +22,10 @@ build-backend = "hatchling.build"
 
 [tool.uv]
 dev-dependencies = [
-    "pyright>=1.1.396",
-    "pytest>=8.3.5",
-    "ruff>=0.11.0",
-    "testcontainers>=4.9.2",
+  "pyright>=1.1.396",
+  "pytest>=8.3.5",
+  "ruff>=0.11.0",
+  "testcontainers>=4.9.2",
 ]
 
 [tool.uv.sources]
