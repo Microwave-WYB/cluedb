@@ -1,0 +1,10 @@
+.pytest_cache/
+.venv/
+__pycache__/
+credentials.json
+private_key.pem
+.python-version
+
+/.env
+*.ipynb
+*.log
