@@ -207,7 +207,6 @@ class SyncState(StrEnum):
     """Sync states"""
 
     PENDING = auto()  # Found in the GCS bucket but not yet processed
-    QUEUED = auto()  # Queued for processing
     PROCESSING = auto()  # Currently being processed
     SYNCED = auto()  # Successfully processed
     FAILED = auto()  # Failed to process
