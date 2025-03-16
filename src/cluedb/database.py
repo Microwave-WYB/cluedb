@@ -117,20 +117,21 @@ class Database:
                 "Primary key value must be provided to update or insert a model into the database. "
                 "Use the insert_model method to insert a new model."
             )
+        existing = self.get(type(model), pkey)
+        if existing:
+            for key, value in model.model_dump().items():
+                setattr(existing, key, value)
+            self.insert_model(existing)
+        else:
+            self.insert_model(model)
+
+        for listener in self._listeners.get(type(model), []):
+            listener(self, model)
+
+    def get[T: SQLModel](self, model: type[T], pkey: Any) -> T | None:
+        """Get a model by primary key."""
         with self.session() as session:
-            existing = session.get(type(model), pkey)
-            if existing:
-                for key, value in model.model_dump().items():
-                    setattr(existing, key, value)
-                session.commit()
-            else:
-                session.add(model)
-                session.commit()
-                # refresh the model to get the primary key
-                session.refresh(model)
-            # run any listeners for this model
-            for listener in self._listeners.get(type(model), []):
-                listener(self, model)
+            return session.get(model, pkey)
 
     def create_ble_device(self, ble_device_create: BLEDeviceCreate) -> None:
         """Insert UUIDs and the BLEDevice into the database"""
