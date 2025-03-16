@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pytest import fixture
@@ -91,6 +91,30 @@ def test_upsert_ble_uuid(database: Database):
         result = session.exec(select(BLEUUID).where(BLEUUID.full_uuid == uuid_val)).one()
         assert result.short_uuid == 5678
         assert result.name == "Updated UUID"
+
+
+def test_upsert_model(database: Database):
+    uuid_val = uuid4()
+    ble_uuid = BLEUUID(full_uuid=uuid_val, short_uuid=1234, name="Test UUID")
+    database.upsert_model(ble_uuid, uuid_val)
+
+    updated_uuid = BLEUUID(full_uuid=uuid_val, short_uuid=5678, name="Updated UUID")
+    database.upsert_model(updated_uuid, uuid_val)
+
+    with database.session() as session:
+        result = session.exec(select(BLEUUID).where(BLEUUID.full_uuid == uuid_val)).one()
+        assert result.short_uuid == 5678
+        assert result.name == "Updated UUID"
+
+
+def test_get(database: Database):
+    # Setup: Add a BLE device
+    ble_uuid = BLEUUID(
+        full_uuid=UUID("00000000-0000-0000-0000-000000000001"), short_uuid=0, name="Test UUID"
+    )
+    database.insert_model(ble_uuid)
+
+    assert database.get(BLEUUID, UUID("00000000-0000-0000-0000-000000000001"))
 
 
 def test_create_ble_device(database: Database):
