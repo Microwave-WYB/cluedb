@@ -6,6 +6,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Callable
+from warnings import deprecated
 
 from sqlalchemy import Engine
 from sqlmodel import Session, SQLModel, col, create_engine, select
@@ -89,6 +90,7 @@ class Database:
             sync_status.process_time = datetime.now(UTC)
             session.commit()
 
+    @deprecated("Use upsert_model instead")
     def upsert_ble_uuid(self, ble_uuid: BLEUUID) -> None:
         """Update or insert a BLEUUID."""
         self.upsert_model(ble_uuid, ble_uuid.full_uuid)
