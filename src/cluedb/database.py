@@ -102,18 +102,30 @@ class Database:
         Insert a single model into the database, notifying any listeners.
         Set exist_ok to True to ignore unique constraint errors.
         """
-        try:
-            with self.session() as session:
-                session.add(model)
+        self.insert_models([model], exist_ok)
+
+    def insert_models[T: SQLModel](self, models: list[T], exist_ok: bool = False) -> None:
+        """
+        Insert multiple models into the database in a single transaction.
+        Set exist_ok to True to ignore unique constraint errors.
+        """
+        if not models:
+            return
+
+        with self.session() as session:
+            try:
+                session.add_all(models)
                 session.commit()
-                # refresh the model to get the primary key
-                session.refresh(model)
-                # run any listeners for this model
-                for listener in self._listeners.get(type(model), []):
-                    listener(self, model)
-        except IntegrityError:
-            if not exist_ok:
-                raise
+                # refresh the models to get the primary keys
+                for model in models:
+                    session.refresh(model)
+                # run any listeners for these models
+                for model in models:
+                    for listener in self._listeners.get(type(model), []):
+                        listener(self, model)
+            except IntegrityError:
+                if not exist_ok:
+                    raise
 
     def upsert_model(self, model: SQLModel, pkey: Any) -> None:
         """
@@ -151,7 +163,7 @@ class Database:
         if not ble_device_creates:
             return
 
-        # Prepare all devices and UUIDs before opening transaction
+        # Prepare all devices and UUIDs
         all_devices: list[BLEDevice] = []
         all_uuids: list[BLEUUID] = []
         device_uuid_pairs: list[tuple[BLEDevice, set[BLEUUID]]] = []
@@ -162,67 +174,23 @@ class Database:
             all_uuids.extend(uuids)
             device_uuid_pairs.append((device, uuids))
 
-        with self.session() as session:
-            # Process all UUIDs in bulk
-            uuid_cache = {}  # Cache for UUID lookups to avoid repeated queries
+        # First insert all UUIDs with exist_ok=True
+        self.insert_models(all_uuids, exist_ok=True)
 
-            # Get all existing UUIDs in a single query to minimize database roundtrips
-            existing_uuid_objects = {}
-            for uuid_type in {type(uuid) for uuid in all_uuids}:
-                uuid_values = [uuid.full_uuid for uuid in all_uuids if isinstance(uuid, uuid_type)]
-                if uuid_values:
-                    # Query all UUIDs of this type in a single query
-                    for existing in session.exec(
-                        select(uuid_type).where(col(uuid_type.full_uuid).in_(uuid_values))
-                    ).all():
-                        existing_uuid_objects[existing.full_uuid] = existing
+        # Then insert all devices
+        self.insert_models(all_devices)
 
-            # Update or add all UUIDs
-            uuids_to_add = []
-            for uuid in all_uuids:
-                existing = existing_uuid_objects.get(uuid.full_uuid)
-                if existing:
-                    # Update existing UUID
-                    for key, value in uuid.model_dump().items():
-                        setattr(existing, key, value)
-                    uuid_cache[uuid.full_uuid] = existing
-                else:
-                    # Add new UUID
-                    uuids_to_add.append(uuid)
-                    uuid_cache[uuid.full_uuid] = uuid
+        # Finally create and insert all device-UUID relationships
+        device_uuid_relationships = []
+        for device, uuids in device_uuid_pairs:
+            assert device.id is not None
+            for uuid in uuids:
+                device_uuid_relationships.append(
+                    BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid)
+                )
 
-            # Add all new UUIDs in bulk
-            if uuids_to_add:
-                session.add_all(uuids_to_add)
-
-            # Add all devices
-            session.add_all(all_devices)
-            session.flush()  # Get IDs without committing
-
-            # Create all device-UUID relationships at once
-            device_uuid_relationships = []
-            for device, uuids in device_uuid_pairs:
-                assert device.id is not None
-                for uuid in uuids:
-                    device_uuid_relationships.append(
-                        BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid)
-                    )
-
-            # Add all relationships in bulk
-            if device_uuid_relationships:
-                session.add_all(device_uuid_relationships)
-
-            # Commit everything in one transaction
-            session.commit()
-
-            # Notify listeners (after transaction completes)
-            for uuid in all_uuids:
-                for listener in self._listeners.get(type(uuid), []):
-                    listener(self, uuid)
-
-            for device in all_devices:
-                for listener in self._listeners.get(type(device), []):
-                    listener(self, device)
+        if device_uuid_relationships:
+            self.insert_models(device_uuid_relationships)
 
     def create_android_app(self, android_app: AndroidAppCreate, overwrite: bool = False) -> None:
         """Insert UUIDs and the AndroidApp into the database using a single transaction"""
