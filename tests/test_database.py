@@ -148,7 +148,7 @@ def test_create_android_app(database: Database):
     app_create = AndroidAppCreate(
         app_id="com.example.app", name="Test App", description="A test app", uuids=uuid_val
     )
-    database.create_android_app(app_create)
+    database.create_android_apps([app_create])
 
     # Verify
     with database.session() as session:

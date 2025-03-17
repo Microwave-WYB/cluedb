@@ -200,52 +200,66 @@ class Database:
         if device_uuid_relationships:
             self.insert_models(device_uuid_relationships)
 
-    def create_android_app(self, android_app: AndroidAppCreate, overwrite: bool = False) -> None:
-        """Insert UUIDs and the AndroidApp into the database using a single transaction"""
-        # Check if app exists first
+    def create_android_apps(self, android_app_creates: list[AndroidAppCreate]) -> None:
+        """Insert multiple Android apps and their UUIDs into the database in a single transaction
+
+        Args:
+            android_app_creates: List of AndroidAppCreate objects to process
+
+        Raises:
+            ValueError: If any app with the same app_id already exists
+        """
+        if not android_app_creates:
+            return
+
+        # Check for existing apps first
         with self.session() as session:
-            existing_app = session.get(AndroidApp, android_app.app_id)
-            if existing_app and not overwrite:
-                raise ValueError(f"AndroidApp with app_id {android_app.app_id} already exists")
+            for app_create in android_app_creates:
+                existing_app = session.get(AndroidApp, app_create.app_id)
+                if existing_app:
+                    raise ValueError(f"AndroidApp with app_id {app_create.app_id} already exists")
+
+        # Prepare all apps and UUIDs
+        all_apps: list[AndroidApp] = []
+        all_uuids: list[BLEUUID] = []
+        app_uuid_pairs: list[tuple[AndroidApp, set[BLEUUID]]] = []
 
         # Create entities
-        uuids, app = android_app.create()
+        for app_create in android_app_creates:
+            uuids, app = app_create.create()
+            all_apps.append(app)
+            all_uuids.extend(uuids)
+            app_uuid_pairs.append((app, uuids))
 
-        # Insert UUIDs with exist_ok=True
-        self.insert_models(uuids, exist_ok=True)
+        # First insert all UUIDs with exist_ok=True to handle duplicates
+        self.insert_models(all_uuids, exist_ok=True)
 
-        # Handle app insertion or update
-        if existing_app and overwrite:
-            with self.session() as session:
-                for key, value in app.model_dump().items():
-                    setattr(existing_app, key, value)
-                session.add(existing_app)
-                session.commit()
-                # Run listeners for the app
-                for listener in self._listeners.get(type(app), []):
-                    listener(self, existing_app)
-        else:
-            self.insert_models([app])
+        # Then insert all apps
+        self.insert_models(all_apps)
 
-        # Create relationships between app and UUIDs
-        relationships = []
-        for uuid in uuids:
-            relationships.append(AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid))
+        # Finally create and insert all app-UUID relationships
+        app_uuid_relationships = []
+        for app, uuids in app_uuid_pairs:
+            for uuid in uuids:
+                app_uuid_relationships.append(
+                    AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid)
+                )
 
         # Insert relationships, checking for duplicates
-        with self.session() as session:
-            for relationship in relationships:
-                existing = session.exec(
-                    select(AndroidAppUUID).where(
-                        (col(AndroidAppUUID.app_id) == relationship.app_id)
-                        & (col(AndroidAppUUID.uuid) == relationship.uuid)
-                    )
-                ).first()
+        if app_uuid_relationships:
+            with self.session() as session:
+                for relationship in app_uuid_relationships:
+                    existing = session.exec(
+                        select(AndroidAppUUID).where(
+                            (col(AndroidAppUUID.app_id) == relationship.app_id)
+                            & (col(AndroidAppUUID.uuid) == relationship.uuid)
+                        )
+                    ).first()
 
-                if not existing:
-                    session.add(relationship)
+                    if not existing:
+                        session.add(relationship)
 
-            session.commit()
+                session.commit()
 
     def dispose(self) -> None:
         """Close the database connection."""
