@@ -111,8 +111,7 @@ class Database:
                 if not exist_ok:
                     raise e
 
-        for listener in self._listeners.get(type(model), []):
-            listener(self, model)
+        self._notify_listeners([model])
 
     def insert_models[T: SQLModel](self, models: Iterable[T], exist_ok: bool = False) -> None:
         """
@@ -132,8 +131,7 @@ class Database:
                         listener(self, model)
             return
 
-        for model in models:
-            self.insert_model(model, exist_ok=True)
+        self._notify_listeners(models)
 
     def upsert_model(self, model: SQLModel, pkey: Any) -> None:
         """
@@ -154,13 +152,18 @@ class Database:
         else:
             self.insert_model(model)
 
-        for listener in self._listeners.get(type(model), []):
-            listener(self, model)
+        self._notify_listeners([model])
 
     def get[T: SQLModel](self, model: type[T], pkey: Any) -> T | None:
         """Get a model by primary key."""
         with self.session() as session:
             return session.get(model, pkey)
+
+    def _notify_listeners[T: SQLModel](self, models: Iterable[T]) -> None:
+        """Notify listeners of a model change."""
+        for model in models:
+            for listener in self._listeners.get(type(model), []):
+                listener(self, model)
 
     def create_ble_devices(self, ble_device_creates: list[BLEDeviceCreate]) -> None:
         """Insert multiple BLE devices and their UUIDs into the database in a single transaction
@@ -171,95 +174,106 @@ class Database:
         if not ble_device_creates:
             return
 
-        # Prepare all devices and UUIDs
-        all_devices: list[BLEDevice] = []
-        all_uuids: list[BLEUUID] = []
-        device_uuid_pairs: list[tuple[BLEDevice, set[BLEUUID]]] = []
+        with self.session() as session:
+            # Prepare all devices and UUIDs
+            all_devices: list[BLEDevice] = []
+            all_uuids: list[BLEUUID] = []
+            device_uuid_pairs: list[tuple[BLEDevice, set[BLEUUID]]] = []
 
-        for ble_device_create in ble_device_creates:
-            uuids, device = ble_device_create.create()
-            all_devices.append(device)
-            all_uuids.extend(uuids)
-            device_uuid_pairs.append((device, uuids))
+            for ble_device_create in ble_device_creates:
+                uuids, device = ble_device_create.create()
+                all_devices.append(device)
+                all_uuids.extend(uuids)
+                device_uuid_pairs.append((device, uuids))
 
-        # First insert all UUIDs with exist_ok=True to handle duplicates
-        self.insert_models(all_uuids, exist_ok=True)
+            # First insert all UUIDs with exist_ok=True to handle duplicates
+            for uuid in all_uuids:
+                if not session.get(BLEUUID, uuid.full_uuid):
+                    session.add(uuid)
 
-        # Then insert all devices
-        self.insert_models(all_devices)
+            session.flush()
 
-        # Finally create and insert all device-UUID relationships
-        device_uuid_relationships = []
-        for device, uuids in device_uuid_pairs:
-            assert device.id is not None
-            for uuid in uuids:
-                device_uuid_relationships.append(
-                    BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid)
-                )
+            # Then insert all devices
+            session.add_all(all_devices)
+            session.flush()
 
-        if device_uuid_relationships:
-            self.insert_models(device_uuid_relationships)
+            # Finally create and insert all device-UUID relationships
+            device_uuid_relationships = []
+            for device, uuids in device_uuid_pairs:
+                assert device.id is not None
+                for uuid in uuids:
+                    device_uuid_relationships.append(
+                        BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid)
+                    )
+
+            if device_uuid_relationships:
+                session.add_all(device_uuid_relationships)
+            session.commit()
+
+            for device in all_devices:
+                session.refresh(device)
+
+            for relationship in device_uuid_relationships:
+                session.refresh(relationship)
+
+            for uuid in all_uuids:
+                session.refresh(uuid)
+
+        self._notify_listeners(all_devices)
+        self._notify_listeners(all_uuids)
+        self._notify_listeners(device_uuid_relationships)
 
     def create_android_apps(self, android_app_creates: list[AndroidAppCreate]) -> None:
         """Insert multiple Android apps and their UUIDs into the database in a single transaction
 
         Args:
             android_app_creates: List of AndroidAppCreate objects to process
-
-        Raises:
-            ValueError: If any app with the same app_id already exists
         """
         if not android_app_creates:
             return
 
-        # Check for existing apps first
         with self.session() as session:
+            # Prepare all apps and UUIDs
+            all_apps: list[AndroidApp] = []
+            all_uuids: list[BLEUUID] = []
+            app_uuid_pairs: list[tuple[AndroidApp, set[BLEUUID]]] = []
+
+            # Create entities
             for app_create in android_app_creates:
-                existing_app = session.get(AndroidApp, app_create.app_id)
-                if existing_app:
-                    raise ValueError(f"AndroidApp with app_id {app_create.app_id} already exists")
+                uuids, app = app_create.create()
+                all_apps.append(app)
+                all_uuids.extend(uuids)
+                app_uuid_pairs.append((app, uuids))
 
-        # Prepare all apps and UUIDs
-        all_apps: list[AndroidApp] = []
-        all_uuids: list[BLEUUID] = []
-        app_uuid_pairs: list[tuple[AndroidApp, set[BLEUUID]]] = []
+            # First insert all UUIDs with exist_ok=True to handle duplicates
+            for uuid in all_uuids:
+                if not session.get(BLEUUID, uuid.full_uuid):
+                    session.add(uuid)
+            session.flush()
 
-        # Create entities
-        for app_create in android_app_creates:
-            uuids, app = app_create.create()
-            all_apps.append(app)
-            all_uuids.extend(uuids)
-            app_uuid_pairs.append((app, uuids))
+            # Then insert all apps with exist_ok=True to skip existing ones
+            session.add_all(all_apps)
+            session.flush()
 
-        # First insert all UUIDs with exist_ok=True to handle duplicates
-        self.insert_models(all_uuids, exist_ok=True)
+            # Finally create and insert all app-UUID relationships
+            app_uuid_relationships = []
+            for app, uuids in app_uuid_pairs:
+                for uuid in uuids:
+                    app_uuid_relationships.append(
+                        AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid)
+                    )
 
-        # Then insert all apps
-        self.insert_models(all_apps)
-
-        # Finally create and insert all app-UUID relationships
-        app_uuid_relationships = []
-        for app, uuids in app_uuid_pairs:
-            for uuid in uuids:
-                app_uuid_relationships.append(
-                    AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid)
-                )
-
-        # Insert relationships, checking for duplicates
-        if app_uuid_relationships:
-            with self.session() as session:
+            if app_uuid_relationships:
                 for relationship in app_uuid_relationships:
-                    existing = session.exec(
-                        select(AndroidAppUUID).where(
-                            (col(AndroidAppUUID.app_id) == relationship.app_id)
-                            & (col(AndroidAppUUID.uuid) == relationship.uuid)
-                        )
-                    ).first()
-
+                    existing = session.get(AndroidAppUUID, (relationship.app_id, relationship.uuid))
                     if not existing:
                         session.add(relationship)
 
                 session.commit()
+
+        self._notify_listeners(all_apps)
+        self._notify_listeners(all_uuids)
+        self._notify_listeners(app_uuid_relationships)
 
     def dispose(self) -> None:
         """Close the database connection."""

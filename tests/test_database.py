@@ -167,6 +167,27 @@ def test_create_android_app(database: Database):
         assert len(app_uuids) == 1
         assert app_uuids[0].app_id == "com.example.app"
 
+    another_app_create = AndroidAppCreate(
+        app_id="com.example.app2", name="Test App 2", description="Another test app", uuids=uuid_val
+    )
+    database.create_android_apps([another_app_create])
+
+    with database.session() as session:
+        apps = session.exec(select(AndroidApp)).all()
+        assert len(apps) == 2
+        assert apps[1].app_id == "com.example.app2"
+        assert apps[1].name == "Test App 2"
+
+        # Check the UUID was created
+        uuids = session.exec(select(BLEUUID)).all()
+        assert len(uuids) == 1
+        assert str(uuids[0].full_uuid) == uuid_val
+
+        # Check the many-to-many relationship
+        app_uuids = session.exec(select(AndroidAppUUID)).all()
+        assert len(app_uuids) == 2
+        assert app_uuids[1].app_id == "com.example.app2"
+
 
 listener_called = False
 
