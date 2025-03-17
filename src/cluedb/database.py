@@ -111,7 +111,7 @@ class Database:
                 if not exist_ok:
                     raise e
 
-        self._notify_listeners([model])
+        self._notify_listeners([model], type(model))
 
     def insert_models[T: SQLModel](self, models: Iterable[T], exist_ok: bool = False) -> None:
         """
@@ -131,7 +131,7 @@ class Database:
                         listener(self, model)
             return
 
-        self._notify_listeners(models)
+        self._notify_listeners(models, type(next(iter(models))))
 
     def upsert_model(self, model: SQLModel, pkey: Any) -> None:
         """
@@ -152,17 +152,19 @@ class Database:
         else:
             self.insert_model(model)
 
-        self._notify_listeners([model])
+        self._notify_listeners([model], type(model))
 
     def get[T: SQLModel](self, model: type[T], pkey: Any) -> T | None:
         """Get a model by primary key."""
         with self.session() as session:
             return session.get(model, pkey)
 
-    def _notify_listeners[T: SQLModel](self, models: Iterable[T]) -> None:
+    def _notify_listeners[T: SQLModel](self, models: Iterable[T], model_type: type[T]) -> None:
         """Notify listeners of a model change."""
+        if not self._listeners.get(model_type):
+            return
         for model in models:
-            for listener in self._listeners.get(type(model), []):
+            for listener in self._listeners[model_type]:
                 listener(self, model)
 
     def create_ble_devices(self, ble_device_creates: list[BLEDeviceCreate]) -> None:
@@ -219,9 +221,9 @@ class Database:
             for uuid in all_uuids:
                 session.refresh(uuid)
 
-        self._notify_listeners(all_devices)
-        self._notify_listeners(all_uuids)
-        self._notify_listeners(device_uuid_relationships)
+        self._notify_listeners(all_devices, BLEDevice)
+        self._notify_listeners(all_uuids, BLEUUID)
+        self._notify_listeners(device_uuid_relationships, BLEDeviceUUID)
 
     def create_android_apps(self, android_app_creates: list[AndroidAppCreate]) -> None:
         """Insert multiple Android apps and their UUIDs into the database in a single transaction
@@ -271,9 +273,9 @@ class Database:
 
                 session.commit()
 
-        self._notify_listeners(all_apps)
-        self._notify_listeners(all_uuids)
-        self._notify_listeners(app_uuid_relationships)
+        self._notify_listeners(all_apps, AndroidApp)
+        self._notify_listeners(all_uuids, BLEUUID)
+        self._notify_listeners(app_uuid_relationships, AndroidAppUUID)
 
     def dispose(self) -> None:
         """Close the database connection."""
