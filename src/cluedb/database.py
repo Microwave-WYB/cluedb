@@ -254,7 +254,9 @@ class Database:
             session.flush()
 
             # Then insert all apps with exist_ok=True to skip existing ones
-            session.add_all(all_apps)
+            for app in all_apps:
+                if not session.get(AndroidApp, app.app_id):
+                    session.add(app)
             session.flush()
 
             # Finally create and insert all app-UUID relationships
