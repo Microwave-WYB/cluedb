@@ -134,29 +134,88 @@ class Database:
             return session.get(model, pkey)
 
     def create_ble_device(self, ble_device_create: BLEDeviceCreate) -> None:
-        """Insert UUIDs and the BLEDevice into the database"""
+        """Insert UUIDs and the BLEDevice into the database using a single transaction"""
         uuids, device = ble_device_create.create()
-        for uuid in uuids:
-            self.upsert_model(uuid, uuid.full_uuid)
-        self.insert_model(device)
-        assert device.id is not None
-        # Update the many-to-many relationship
-        for uuid in uuids:
-            self.insert_model(BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid))
+
+        with self.session() as session:
+            # Handle all UUIDs in bulk
+            for uuid in uuids:
+                existing = session.get(type(uuid), uuid.full_uuid)
+                if existing:
+                    for key, value in uuid.model_dump().items():
+                        setattr(existing, key, value)
+                else:
+                    session.add(uuid)
+
+            # Add the device
+            session.add(device)
+            session.flush()  # Get the ID without committing
+
+            # Add all relationships at once
+            assert device.id is not None
+            for uuid in uuids:
+                session.add(BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid))
+
+            # Commit everything in one go
+            session.commit()
+
+            # Now notify listeners (after the transaction)
+            for uuid in uuids:
+                for listener in self._listeners.get(type(uuid), []):
+                    listener(self, uuid)
+
+            for listener in self._listeners.get(type(device), []):
+                listener(self, device)
 
     def create_android_app(self, android_app: AndroidAppCreate, overwrite: bool = False) -> None:
-        """Insert UUIDs and the AndroidApp into the database"""
+        """Insert UUIDs and the AndroidApp into the database using a single transaction"""
         with self.session() as session:
+            # Check if app exists first
             existing_app = session.get(AndroidApp, android_app.app_id)
             if existing_app and not overwrite:
                 raise ValueError(f"AndroidApp with app_id {android_app.app_id} already exists")
-        uuids, app = android_app.create()
-        for uuid in uuids:
-            self.upsert_model(uuid, uuid.full_uuid)
-        self.upsert_model(app, app.app_id)
-        assert app.app_id is not None
-        # Update the many-to-many relationship
-        for uuid in uuids:
-            self.upsert_model(
-                AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid), (app.app_id, uuid.full_uuid)
-            )
+
+            # Create entities
+            uuids, app = android_app.create()
+
+            # Handle all UUIDs in bulk
+            for uuid in uuids:
+                existing_uuid = session.get(type(uuid), uuid.full_uuid)
+                if existing_uuid:
+                    for key, value in uuid.model_dump().items():
+                        setattr(existing_uuid, key, value)
+                else:
+                    session.add(uuid)
+
+            # Handle app
+            if existing_app and overwrite:
+                for key, value in app.model_dump().items():
+                    setattr(existing_app, key, value)
+            else:
+                session.add(app)
+
+            session.flush()  # Ensure app has ID without committing
+
+            # Add all relationships at once
+            for uuid in uuids:
+                # Check if relationship already exists
+                relationship = session.exec(
+                    select(AndroidAppUUID).where(
+                        (col(AndroidAppUUID.app_id) == app.app_id)
+                        & (col(AndroidAppUUID.uuid) == uuid.full_uuid)
+                    )
+                ).first()
+
+                if not relationship:
+                    session.add(AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid))
+
+            # Commit everything in one go
+            session.commit()
+
+            # Now notify listeners (after the transaction)
+            for uuid in uuids:
+                for listener in self._listeners.get(type(uuid), []):
+                    listener(self, uuid)
+
+            for listener in self._listeners.get(type(app), []):
+                listener(self, app)
