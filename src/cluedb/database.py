@@ -9,6 +9,7 @@ from typing import Any, Callable
 from warnings import deprecated
 
 from sqlalchemy import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, SQLModel, col, create_engine, select
 
 from cluedb.models import (
@@ -96,22 +97,29 @@ class Database:
         """Update or insert a BLEUUID."""
         self.upsert_model(ble_uuid, ble_uuid.full_uuid)
 
-    def insert_model(self, model: SQLModel) -> None:
+    def insert_model(self, model: SQLModel, exist_ok: bool = False) -> None:
         """
         Insert a single model into the database, notifying any listeners.
+        Set exist_ok to True to ignore unique constraint errors.
         """
-        with self.session() as session:
-            session.add(model)
-            session.commit()
-            # refresh the model to get the primary key
-            session.refresh(model)
-            # run any listeners for this model
-            for listener in self._listeners.get(type(model), []):
-                listener(self, model)
+        try:
+            with self.session() as session:
+                session.add(model)
+                session.commit()
+                # refresh the model to get the primary key
+                session.refresh(model)
+                # run any listeners for this model
+                for listener in self._listeners.get(type(model), []):
+                    listener(self, model)
+        except IntegrityError:
+            if not exist_ok:
+                raise
 
     def upsert_model(self, model: SQLModel, pkey: Any) -> None:
         """
         Update or insert a single model into the database, notifying any listeners.
+        This is different from insert_model with exist_ok=True
+        because it will update the model if it already exists.
         """
         if not pkey:
             raise ValueError(
