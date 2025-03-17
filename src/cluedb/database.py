@@ -16,6 +16,7 @@ from cluedb.models import (
     AndroidApp,
     AndroidAppCreate,
     AndroidAppUUID,
+    BLEDevice,
     BLEDeviceCreate,
     BLEDeviceUUID,
     SyncState,
@@ -133,39 +134,87 @@ class Database:
         with self.session() as session:
             return session.get(model, pkey)
 
-    def create_ble_device(self, ble_device_create: BLEDeviceCreate) -> None:
-        """Insert UUIDs and the BLEDevice into the database using a single transaction"""
-        uuids, device = ble_device_create.create()
+    def create_ble_devices(self, ble_device_creates: list[BLEDeviceCreate]) -> None:
+        """Insert multiple BLE devices and their UUIDs into the database in a single transaction
+
+        Args:
+            ble_device_creates: List of BLEDeviceCreate objects to process
+        """
+        if not ble_device_creates:
+            return
+
+        # Prepare all devices and UUIDs before opening transaction
+        all_devices: list[BLEDevice] = []
+        all_uuids: list[BLEUUID] = []
+        device_uuid_pairs: list[tuple[BLEDevice, set[BLEUUID]]] = []
+
+        for ble_device_create in ble_device_creates:
+            uuids, device = ble_device_create.create()
+            all_devices.append(device)
+            all_uuids.extend(uuids)
+            device_uuid_pairs.append((device, uuids))
 
         with self.session() as session:
-            # Handle all UUIDs in bulk
-            for uuid in uuids:
-                existing = session.get(type(uuid), uuid.full_uuid)
+            # Process all UUIDs in bulk
+            uuid_cache = {}  # Cache for UUID lookups to avoid repeated queries
+
+            # Get all existing UUIDs in a single query to minimize database roundtrips
+            existing_uuid_objects = {}
+            for uuid_type in {type(uuid) for uuid in all_uuids}:
+                uuid_values = [uuid.full_uuid for uuid in all_uuids if isinstance(uuid, uuid_type)]
+                if uuid_values:
+                    # Query all UUIDs of this type in a single query
+                    for existing in session.exec(
+                        select(uuid_type).where(col(uuid_type.full_uuid).in_(uuid_values))
+                    ).all():
+                        existing_uuid_objects[existing.full_uuid] = existing
+
+            # Update or add all UUIDs
+            uuids_to_add = []
+            for uuid in all_uuids:
+                existing = existing_uuid_objects.get(uuid.full_uuid)
                 if existing:
+                    # Update existing UUID
                     for key, value in uuid.model_dump().items():
                         setattr(existing, key, value)
+                    uuid_cache[uuid.full_uuid] = existing
                 else:
-                    session.add(uuid)
+                    # Add new UUID
+                    uuids_to_add.append(uuid)
+                    uuid_cache[uuid.full_uuid] = uuid
 
-            # Add the device
-            session.add(device)
-            session.flush()  # Get the ID without committing
+            # Add all new UUIDs in bulk
+            if uuids_to_add:
+                session.add_all(uuids_to_add)
 
-            # Add all relationships at once
-            assert device.id is not None
-            for uuid in uuids:
-                session.add(BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid))
+            # Add all devices
+            session.add_all(all_devices)
+            session.flush()  # Get IDs without committing
 
-            # Commit everything in one go
+            # Create all device-UUID relationships at once
+            device_uuid_relationships = []
+            for device, uuids in device_uuid_pairs:
+                assert device.id is not None
+                for uuid in uuids:
+                    device_uuid_relationships.append(
+                        BLEDeviceUUID(ble_device_id=device.id, uuid=uuid.full_uuid)
+                    )
+
+            # Add all relationships in bulk
+            if device_uuid_relationships:
+                session.add_all(device_uuid_relationships)
+
+            # Commit everything in one transaction
             session.commit()
 
-            # Now notify listeners (after the transaction)
-            for uuid in uuids:
+            # Notify listeners (after transaction completes)
+            for uuid in all_uuids:
                 for listener in self._listeners.get(type(uuid), []):
                     listener(self, uuid)
 
-            for listener in self._listeners.get(type(device), []):
-                listener(self, device)
+            for device in all_devices:
+                for listener in self._listeners.get(type(device), []):
+                    listener(self, device)
 
     def create_android_app(self, android_app: AndroidAppCreate, overwrite: bool = False) -> None:
         """Insert UUIDs and the AndroidApp into the database using a single transaction"""

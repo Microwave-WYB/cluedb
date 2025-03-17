@@ -117,7 +117,7 @@ def test_get(database: Database):
     assert database.get(BLEUUID, UUID("00000000-0000-0000-0000-000000000001"))
 
 
-def test_create_ble_device(database: Database):
+def test_create_ble_devices(database: Database):
     # Create a BLE device
     ble_device = BLEDeviceCreate(
         mac="AA:BB:CC:DD:EE:FF",
@@ -129,7 +129,7 @@ def test_create_ble_device(database: Database):
         blob_name="test_blob",
         uuids=str(uuid4()),
     )
-    database.create_ble_device(ble_device)
+    database.create_ble_devices([ble_device])
 
     # Verify
     with database.session() as session:
@@ -203,7 +203,7 @@ def test_insert_model_listener(database: Database):
         uuids=str(uuid4()),
         name="Listener Test",
     )
-    database.create_ble_device(ble_device)
+    database.create_ble_devices([ble_device])
 
     # Verify the listener was called
     assert listener_called
