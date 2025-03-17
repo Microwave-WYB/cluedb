@@ -226,11 +226,7 @@ class Database:
         self._notify_listeners(device_uuid_relationships, BLEDeviceUUID)
 
     def create_android_apps(self, android_app_creates: list[AndroidAppCreate]) -> None:
-        """Insert multiple Android apps and their UUIDs into the database in a single transaction
-
-        Args:
-            android_app_creates: List of AndroidAppCreate objects to process
-        """
+        """Insert multiple Android apps and their UUIDs into the database in a single transaction"""
         if not android_app_creates:
             return
 
@@ -247,13 +243,11 @@ class Database:
                 all_uuids.extend(uuids)
                 app_uuid_pairs.append((app, uuids))
 
-            # First insert all UUIDs with exist_ok=True to handle duplicates
             for uuid in all_uuids:
                 if not session.get(BLEUUID, uuid.full_uuid):
                     session.add(uuid)
             session.flush()
 
-            # Then insert all apps with exist_ok=True to skip existing ones
             for app in all_apps:
                 if not session.get(AndroidApp, app.app_id):
                     session.add(app)
@@ -273,7 +267,7 @@ class Database:
                     if not existing:
                         session.add(relationship)
 
-                session.commit()
+            session.commit()
 
         self._notify_listeners(all_apps, AndroidApp)
         self._notify_listeners(all_uuids, BLEUUID)
