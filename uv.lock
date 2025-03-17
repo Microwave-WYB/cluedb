@@ -16,8 +16,8 @@ wheels = [
 
 [[package]]
 name = "bluenumbers"
-version = "0.1.5"
-source = { git = "https://github.com/Microwave-WYB/bluenumbers.git#947e5129f3cb909a6ba835ed3d89b10497dc311d" }
+version = "0.1.6"
+source = { git = "https://github.com/Microwave-WYB/bluenumbers.git#20e322ad5cfcf1bc71d71b5ef0e81756d42e2298" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -78,7 +78,7 @@ wheels = [
 
 [[package]]
 name = "cluedb"
-version = "0.1.4"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "bluenumbers" },
