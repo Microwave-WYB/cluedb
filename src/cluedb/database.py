@@ -2,7 +2,7 @@
 Centralized database access for the Clue server.
 """
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Callable
@@ -102,9 +102,19 @@ class Database:
         Insert a single model into the database, notifying any listeners.
         Set exist_ok to True to ignore unique constraint errors.
         """
-        self.insert_models([model], exist_ok)
+        with self.session() as session:
+            try:
+                session.add(model)
+                session.commit()
+                session.refresh(model)
+            except IntegrityError as e:
+                if not exist_ok:
+                    raise e
 
-    def insert_models[T: SQLModel](self, models: list[T], exist_ok: bool = False) -> None:
+        for listener in self._listeners.get(type(model), []):
+            listener(self, model)
+
+    def insert_models[T: SQLModel](self, models: Iterable[T], exist_ok: bool = False) -> None:
         """
         Insert multiple models into the database in a single transaction.
         Set exist_ok to True to ignore unique constraint errors.
@@ -112,20 +122,18 @@ class Database:
         if not models:
             return
 
-        with self.session() as session:
-            try:
+        if not exist_ok:
+            with self.session() as session:
                 session.add_all(models)
                 session.commit()
-                # refresh the models to get the primary keys
                 for model in models:
                     session.refresh(model)
-                # run any listeners for these models
-                for model in models:
                     for listener in self._listeners.get(type(model), []):
                         listener(self, model)
-            except IntegrityError:
-                if not exist_ok:
-                    raise
+            return
+
+        for model in models:
+            self.insert_model(model, exist_ok=True)
 
     def upsert_model(self, model: SQLModel, pkey: Any) -> None:
         """
@@ -174,7 +182,7 @@ class Database:
             all_uuids.extend(uuids)
             device_uuid_pairs.append((device, uuids))
 
-        # First insert all UUIDs with exist_ok=True
+        # First insert all UUIDs with exist_ok=True to handle duplicates
         self.insert_models(all_uuids, exist_ok=True)
 
         # Then insert all devices
@@ -194,53 +202,54 @@ class Database:
 
     def create_android_app(self, android_app: AndroidAppCreate, overwrite: bool = False) -> None:
         """Insert UUIDs and the AndroidApp into the database using a single transaction"""
+        # Check if app exists first
         with self.session() as session:
-            # Check if app exists first
             existing_app = session.get(AndroidApp, android_app.app_id)
             if existing_app and not overwrite:
                 raise ValueError(f"AndroidApp with app_id {android_app.app_id} already exists")
 
-            # Create entities
-            uuids, app = android_app.create()
+        # Create entities
+        uuids, app = android_app.create()
 
-            # Handle all UUIDs in bulk
-            for uuid in uuids:
-                existing_uuid = session.get(type(uuid), uuid.full_uuid)
-                if existing_uuid:
-                    for key, value in uuid.model_dump().items():
-                        setattr(existing_uuid, key, value)
-                else:
-                    session.add(uuid)
+        # Insert UUIDs with exist_ok=True
+        self.insert_models(uuids, exist_ok=True)
 
-            # Handle app
-            if existing_app and overwrite:
+        # Handle app insertion or update
+        if existing_app and overwrite:
+            with self.session() as session:
                 for key, value in app.model_dump().items():
                     setattr(existing_app, key, value)
-            else:
-                session.add(app)
+                session.add(existing_app)
+                session.commit()
+                # Run listeners for the app
+                for listener in self._listeners.get(type(app), []):
+                    listener(self, existing_app)
+        else:
+            self.insert_models([app])
 
-            session.flush()  # Ensure app has ID without committing
+        # Create relationships between app and UUIDs
+        relationships = []
+        for uuid in uuids:
+            relationships.append(AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid))
 
-            # Add all relationships at once
-            for uuid in uuids:
-                # Check if relationship already exists
-                relationship = session.exec(
+        # Insert relationships, checking for duplicates
+        with self.session() as session:
+            for relationship in relationships:
+                existing = session.exec(
                     select(AndroidAppUUID).where(
-                        (col(AndroidAppUUID.app_id) == app.app_id)
-                        & (col(AndroidAppUUID.uuid) == uuid.full_uuid)
+                        (col(AndroidAppUUID.app_id) == relationship.app_id)
+                        & (col(AndroidAppUUID.uuid) == relationship.uuid)
                     )
                 ).first()
 
-                if not relationship:
-                    session.add(AndroidAppUUID(app_id=app.app_id, uuid=uuid.full_uuid))
+                if not existing:
+                    session.add(relationship)
 
-            # Commit everything in one go
             session.commit()
 
-            # Now notify listeners (after the transaction)
-            for uuid in uuids:
-                for listener in self._listeners.get(type(uuid), []):
-                    listener(self, uuid)
+    def dispose(self) -> None:
+        """Close the database connection."""
+        self.engine.dispose()
 
-            for listener in self._listeners.get(type(app), []):
-                listener(self, app)
+    def __del__(self) -> None:
+        self.dispose()
